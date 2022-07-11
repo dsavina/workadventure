@@ -17,12 +17,12 @@ import { EmoteManager } from "./EmoteManager";
 import { soundManager } from "./SoundManager";
 import { SharedVariablesManager } from "./SharedVariablesManager";
 import { EmbeddedWebsiteManager } from "./EmbeddedWebsiteManager";
-import { DynamicAreaManager } from "./DynamicAreaManager";
+import { AreaManager } from "./AreaManager";
 
 import { lazyLoadPlayerCharacterTextures } from "../Entity/PlayerTexturesLoadingManager";
 import { lazyLoadCompanionResource } from "../Companion/CompanionTexturesLoadingManager";
 import { iframeListener } from "../../Api/IframeListener";
-import { DEBUG_MODE, ENABLE_FEATURE_MAP_EDITOR, MAX_PER_GROUP, POSITION_DELAY } from "../../Enum/EnvironmentVariable";
+import { DEBUG_MODE, MAX_PER_GROUP, POSITION_DELAY } from "../../Enum/EnvironmentVariable";
 import { ProtobufClientUtils } from "../../Network/ProtobufClientUtils";
 import { Room } from "../../Connexion/Room";
 import { jitsiFactory } from "../../WebRtc/JitsiFactory";
@@ -37,7 +37,7 @@ import { PlayerAnimationDirections } from "../Player/Animation";
 import { hasMovedEventName, Player, requestEmoteEventName } from "../Player/Player";
 import { ErrorSceneName } from "../Reconnecting/ErrorScene";
 import { ReconnectingSceneName } from "../Reconnecting/ReconnectingScene";
-import { AreaType, GameMap } from "./GameMap";
+import { GameMap } from "./GameMap";
 import { PlayerMovement } from "./PlayerMovement";
 import { PlayersPositionInterpolator } from "./PlayersPositionInterpolator";
 import { DirtyScene } from "./DirtyScene";
@@ -106,7 +106,6 @@ import { DEPTH_BUBBLE_CHAT_SPRITE } from "./DepthIndexes";
 import { ErrorScreenMessage, PlayerDetailsUpdatedMessage } from "../../Messages/ts-proto-generated/protos/messages";
 import { uiWebsiteManager } from "./UI/UIWebsiteManager";
 import { embedScreenLayoutStore, highlightedEmbedScreen } from "../../Stores/EmbedScreensStore";
-import { MapEditorModeManager } from "./MapEditor/MapEditorModeManager";
 import { chatVisibilityStore } from "../../Stores/ChatStore";
 import structuredClone from "@ungap/structured-clone";
 import {
@@ -225,7 +224,6 @@ export class GameScene extends DirtyScene {
     private mapTransitioning: boolean = false; //used to prevent transitions happening at the same time.
     private emoteManager!: EmoteManager;
     private cameraManager!: CameraManager;
-    private mapEditorModeManager!: MapEditorModeManager;
     private pathfindingManager!: PathfindingManager;
     private activatablesManager!: ActivatablesManager;
     private preloading: boolean = true;
@@ -233,7 +231,7 @@ export class GameScene extends DirtyScene {
     private sharedVariablesManager!: SharedVariablesManager;
     private objectsByType = new Map<string, ITiledMapObject[]>();
     private embeddedWebsiteManager!: EmbeddedWebsiteManager;
-    private areaManager!: DynamicAreaManager;
+    private areaManager!: AreaManager;
     private loader: Loader;
     private lastCameraEvent: WasCameraUpdatedEvent | undefined;
     private firstCameraUpdateSent: boolean = false;
@@ -572,7 +570,7 @@ export class GameScene extends DirtyScene {
             this.loadNextGameFromExitUrl(exitUrl).catch((e) => console.error(e));
         });
 
-        this.areaManager = new DynamicAreaManager(this.gameMap);
+        this.areaManager = new AreaManager(this.gameMap);
 
         this.startPositionCalculator = new StartPositionCalculator(
             this.gameMap,
@@ -622,9 +620,6 @@ export class GameScene extends DirtyScene {
 
         biggestAvailableAreaStore.recompute();
         this.cameraManager.startFollowPlayer(this.CurrentPlayer);
-        if (ENABLE_FEATURE_MAP_EDITOR) {
-            this.mapEditorModeManager = new MapEditorModeManager(this);
-        }
 
         this.animatedTiles.init(this.Map);
         this.events.on("tileanimationupdate", () => (this.dirty = true));
@@ -749,8 +744,6 @@ export class GameScene extends DirtyScene {
 
                 playersStore.connectToRoomConnection(this.connection);
                 userIsAdminStore.set(this.connection.hasTag("admin"));
-
-                this.mapEditorModeManager?.subscribeToStreams(this.connection);
 
                 this.connection.userJoinedMessageStream.subscribe((message) => {
                     const userMessage: AddPlayerInterface = {
@@ -1343,12 +1336,7 @@ ${escapedMessage}
 
         this.iframeSubscriptionList.push(
             iframeListener.setAreaPropertyStream.subscribe((setProperty) => {
-                this.setAreaProperty(
-                    setProperty.areaName,
-                    AreaType.Dynamic,
-                    setProperty.propertyName,
-                    setProperty.propertyValue
-                );
+                this.setAreaProperty(setProperty.areaName, setProperty.propertyName, setProperty.propertyValue);
             })
         );
 
@@ -1590,11 +1578,10 @@ ${escapedMessage}
 
     private setAreaProperty(
         areaName: string,
-        areaType: AreaType,
         propertyName: string,
         propertyValue: string | number | boolean | undefined
     ): void {
-        this.gameMap.setAreaProperty(areaName, areaType, propertyName, propertyValue);
+        this.gameMap.setAreaProperty(areaName, propertyName, propertyValue);
     }
 
     private setLayerVisibility(layerName: string, visible: boolean): void {
@@ -1713,7 +1700,6 @@ ${escapedMessage}
         this.pinchManager?.destroy();
         this.emoteManager?.destroy();
         this.cameraManager?.destroy();
-        this.mapEditorModeManager?.destroy();
         this.peerStoreUnsubscriber?.();
         this.emoteUnsubscriber?.();
         this.emoteMenuUnsubscriber?.();
@@ -1997,11 +1983,7 @@ ${escapedMessage}
     public update(time: number, delta: number): void {
         this.dirty = false;
         this.currentTick = time;
-        if (!this.mapEditorModeManager?.isActive()) {
-            this.CurrentPlayer.moveUser(delta, this.userInputManager.getEventListForGameTick());
-        } else {
-            this.cameraManager.move(this.userInputManager.getEventListForGameTick());
-        }
+        this.CurrentPlayer.moveUser(delta, this.userInputManager.getEventListForGameTick());
 
         // Let's handle all events
         while (this.pendingEvents.length !== 0) {
@@ -2291,10 +2273,7 @@ ${escapedMessage}
         super.onResize();
         this.reposition(true);
 
-        this.sendViewportToServer();
-    }
-
-    public sendViewportToServer(): void {
+        // Send new viewport to server
         const camera = this.cameras.main;
         this.connection?.setViewport({
             left: camera.scrollX,
@@ -2436,19 +2415,11 @@ ${escapedMessage}
         return this.cameraManager;
     }
 
-    public getMapEditorModeManager(): MapEditorModeManager {
-        return this.mapEditorModeManager;
-    }
-
     public getPathfindingManager(): PathfindingManager {
         return this.pathfindingManager;
     }
 
     public getActivatablesManager(): ActivatablesManager {
         return this.activatablesManager;
-    }
-
-    public isMapEditorEnabled() {
-        return ENABLE_FEATURE_MAP_EDITOR;
     }
 }

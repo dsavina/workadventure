@@ -17,7 +17,3 @@ yarn run precommit
 cd back || exit
 yarn run precommit
 )
-(
-cd map-storage || exit
-yarn run precommit
-)

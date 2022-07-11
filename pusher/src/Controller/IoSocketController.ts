@@ -23,7 +23,6 @@ import {
     AskPositionMessage,
     AvailabilityStatus,
     QueryMessage,
-    EditMapMessage,
 } from "../Messages/generated/messages_pb";
 import { UserMovesMessage } from "../Messages/generated/messages_pb";
 import { parse } from "query-string";
@@ -611,8 +610,6 @@ export class IoSocketController {
                         client,
                         message.getLockgrouppromptmessage() as LockGroupPromptMessage
                     );
-                } else if (message.hasEditmapmessage()) {
-                    socketManager.handleEditMapMessage(client, message.getEditmapmessage() as EditMapMessage);
                 } else if (message.hasXmppmessage()) {
                     socketManager.handleXmppMessage(client, message.getXmppmessage() as XmppMessage);
                 } else if (message.hasAskpositionmessage()) {
